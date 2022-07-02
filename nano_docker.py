@@ -1,5 +1,8 @@
 import os
-from typing import Union, Tuple
+from collections import namedtuple
+from dataclasses import dataclass
+from decimal import *
+from typing import NamedTuple, Tuple, Union
 
 import docker
 import dotenv
@@ -10,6 +13,7 @@ from retry import retry
 import common
 
 RPC_PORT = 17076
+HOST_RPC_PORT = 17076
 BURN_ACCOUNT = "nano_1111111111111111111111111111111111111111111111111111hifc8npp"
 DEFAULT_REPR = BURN_ACCOUNT
 DIFFICULTY = "0000000000000000"
@@ -55,26 +59,40 @@ class Block:
         return self.block_nlib.json()
 
 
-class Chain:
-    __unpublished = []
+class BlockQueue:
+    def __init__(self):
+        self.__queue = []
 
+    def append(self, block: Block):
+        self.__queue.append(block)
+        return block
+
+    def pop_all(self):
+        t = self.__queue
+        self.__queue = []
+        return t
+
+
+default_queue = BlockQueue()
+
+
+class Chain:
     def __init__(self, account_id, private_key, frontier):
         self.account_id = account_id
         self.private_key = private_key
         self.frontier = frontier
 
-    @staticmethod
-    def random_account():
-        seed = nanolib.generate_seed()
-        account_id = nanolib.generate_account_id(seed, 0)
-        private_key = nanolib.generate_account_private_key(seed, 0)
-        return Chain(account_id, private_key, None)
-
     @property
     def balance(self):
         return self.frontier.balance
 
-    def send(self, account: Union["NanoWalletAccount", "Chain", str], amount):
+    def send(
+        self,
+        account: Union["NanoWalletAccount", "Chain", str],
+        amount,
+        block_queue: BlockQueue = default_queue,
+        fork=False,
+    ):
         if amount <= 0:
             raise ValueError("Amount must be positive")
         if not self.frontier:
@@ -94,12 +112,18 @@ class Chain:
         block_nlib.solve_work(DIFFICULTY)
 
         block = Block(block_nlib, self.frontier)
-
-        self.frontier = block
-        self.__unpublished.append(block)
+        block_queue.append(block)
+        if not fork:
+            self.frontier = block
         return block
 
-    def receive(self, block: Block, representative=None) -> Block:
+    def receive(
+        self,
+        block: Block,
+        representative=None,
+        block_queue: BlockQueue = default_queue,
+        fork=False,
+    ) -> Block:
         if not self.frontier:
             # open account
 
@@ -140,19 +164,16 @@ class Chain:
 
             block = Block(block_nlib, self.frontier)
 
-        self.frontier = block
-        self.__unpublished.append(block)
-        return block
+        print(block)
+        block_queue.append(block)
 
-    def publish(self, node: "NanoNode"):
-        cnt = len(self.__unpublished)
-        hashes = [node.publish(block) for block in self.__unpublished]
-        self.__unpublished.clear()
-        return cnt, hashes
+        if not fork:
+            self.frontier = block
+        return block
 
 
 class NanoWalletAccount:
-    def __init__(self, wallet, account_id, private_key):
+    def __init__(self, wallet: "NanoWallet", account_id, private_key):
         self.node = wallet.node
         self.wallet = wallet
         self.account_id = account_id
@@ -167,12 +188,12 @@ class NanoWalletAccount:
     @property
     def balance(self):
         res = self.node.rpc.account_balance(self.account_id)
-        return res["balance"]
+        return Decimal(res["balance"])
 
     @property
     def pending(self):
         res = self.node.rpc.account_balance(self.account_id)
-        return res["pending"]
+        return Decimal(res["pending"])
 
     def send(self, account: Union["NanoWalletAccount", Chain, str], amount) -> Block:
         destination_id = account_id_from_account(account)
@@ -194,7 +215,7 @@ class NanoWalletAccount:
 
 
 class NanoWallet:
-    def __init__(self, node, wallet_id):
+    def __init__(self, node: "NanoNode", wallet_id):
         self.node = node
         self.wallet_id = wallet_id
 
@@ -205,6 +226,15 @@ class NanoWallet:
 
         account_id = self.node.rpc.wallet_add(wallet=self.wallet_id, key=private_key)
         return NanoWalletAccount(self, account_id, private_key)
+
+    def set_represenetative(self, account):
+        representative_id = account_id_from_account(account)
+        self.node.rpc.wallet_representative_set(
+            wallet=self.wallet_id, representative=representative_id
+        )
+
+
+BlockCount = namedtuple("BlockCount", ["checked", "unchecked", "cemented"])
 
 
 class NanoNode:
@@ -217,13 +247,14 @@ class NanoNode:
         self.rpc.version()
 
     def print_info(self):
-        print("name:", self.container.name)
+        print("name:", self.name)
         print("port:", self.host_rpc_port)
-        block_count = self.rpc.block_count()
-        print("blocks count    :", block_count["count"])
-        print("blocks cemented :", block_count["cemented"])
-        print("blocks unchecked:", block_count["unchecked"])
-        print("version:", self.rpc.version())
+        block_count = self.block_count
+        print("blocks checked  :", block_count.checked)
+        print("blocks cemented :", block_count.cemented)
+        print("blocks unchecked:", block_count.unchecked)
+        # print("version:", self.rpc.version())
+        print("peers:", len(self.peers))
         print()
 
     @property
@@ -234,14 +265,41 @@ class NanoNode:
     def name(self):
         return self.container.name
 
-    def create_wallet(self, private_key=None):
+    @property
+    def block_count(self) -> BlockCount:
+        block_count = self.rpc.block_count()
+        checked = int(block_count["count"])
+        unchecked = int(block_count["unchecked"])
+        cemented = int(block_count["cemented"])
+        return BlockCount(checked, unchecked, cemented)
+
+    @property
+    def peers(self):
+        return self.rpc.peers()
+
+    def create_wallet(self, private_key=None, use_as_repr=False):
         wallet_id = self.rpc.wallet_create()
         wallet = NanoWallet(self, wallet_id)
         account = wallet.create_account(private_key=private_key)
+        if use_as_repr:
+            wallet.set_represenetative(account)
         return wallet, account
 
-    def publish(self, block: Block):
-        return self.rpc.process(block.json())
+    def publish_block(self, block: Block, async_process=True):
+        if async_process:
+            payload = {"block": block.json(), "async": async_process}
+            res = self.rpc.call("process", payload)
+            return res
+        else:
+            return self.rpc.process(block.json())
+
+    def pubish_queue(self, block_queue: BlockQueue, async_process=True):
+        unpub = default_queue.pop_all()
+        cnt = len(unpub)
+        hashes = [
+            self.publish_block(block, async_process=async_process) for block in unpub
+        ]
+        return cnt, hashes
 
     def block(self, hash: str, load_previous=True) -> Block:
         block_nlib = self.__nlib_block(hash)
@@ -259,12 +317,22 @@ class NanoNode:
         block_nlib = nanolib.Block.from_dict(block_dict, verify=False)
         return block_nlib
 
+    def populate_backlog(self):
+        res = self.rpc.call("populate_backlog")
+        return True
 
-class NanoTest:
+
+class NodeWalletAccountTuple(NamedTuple):
+    node: NanoNode
+    wallet: NanoWallet
+    account: NanoWalletAccount
+
+
+class NanoNet:
     name_prefix = "nano-baseline"
 
     def __init__(self):
-        self.nodes = []
+        self.nodes: list[NanoNode] = []
         self.__node_containers = []
 
     def setup(self):
@@ -277,19 +345,24 @@ class NanoTest:
 
         self.__setup_network()
         self.__setup_genesis()
-        self.__setup_burn()
+        # self.__setup_burn()
 
     def __setup_burn(self):
         burn_amount = int(self.node_env["NANO_TEST_BURN_AMOUNT_RAW"])
-        self.genesis_account.send(BURN_ACCOUNT, burn_amount)
+        self.genesis.account.send(BURN_ACCOUNT, burn_amount)
 
     def __setup_genesis(self):
-        node, wallet, account = self.create_node_with_account(
-            private_key=self.node_env["NANO_TEST_GENESIS_PRIV"]
+        node = self.create_node(
+            do_not_peer=True, host_port=HOST_RPC_PORT, name="genesis"
         )
-        self.genesis_node = node
-        self.genesis_wallet = wallet
-        self.genesis_account = account
+        wallet, account = node.create_wallet(
+            private_key=self.node_env["NANO_TEST_GENESIS_PRIV"],
+        )
+        self.__genesis = NodeWalletAccountTuple(node, wallet, account)
+
+    @property
+    def genesis(self) -> NodeWalletAccountTuple:
+        return self.__genesis
 
     def __setup_network(self):
         if self.client.networks.list(names=[self.network_name]):
@@ -304,30 +377,15 @@ class NanoTest:
             if cont.name.startswith(self.name_prefix):
                 cont.remove(force=True)
 
-    def create_node(self) -> NanoNode:
-        node = self.__create_node_container()
-        node.ensure_started()
-        node.print_info()
-
-        self.nodes.append(node)
-        return node
-
-    def create_node_with_account(
-        self, private_key=None
-    ) -> Tuple[NanoNode, NanoWallet, NanoWalletAccount]:
-        node = self.create_node()
-        wallet, account = node.create_wallet(private_key=private_key)
-        return node, wallet, account
-
-    def __create_node_container(self, image_name="nano-node", default_peer=None):
+    def create_node(
+        self, image_name="nano-node", do_not_peer=False, host_port=None, name=None
+    ) -> NanoNode:
+        additional_cli = os.getenv("NANO_CLI", "")
         node_cli_options = "--network=test --data_path /root/Nano/"
-        node_command = f"nano_node daemon ${node_cli_options} -l"
-        node_main_command = (
-            f"nano_node daemon {node_cli_options} --config node.peering_port=17075 -l"
-        )
+        node_main_command = f"nano_node daemon {node_cli_options} --config node.peering_port=17075 {additional_cli} -l"
 
-        if default_peer:
-            peer_name = default_peer.container.name
+        if not do_not_peer:
+            peer_name = self.genesis.node.container.name
             env = {
                 "NANO_DEFAULT_PEER": peer_name,
                 "NANO_TEST_PEER_NETWORK": peer_name,
@@ -340,15 +398,20 @@ class NanoTest:
                 **self.node_env,
             }
 
+        if not name:
+            name = f"{self.name_prefix}_node_{len(self.__node_containers)}"
+        else:
+            name = f"{self.name_prefix}_node_{name}"
+
         container = self.client.containers.run(
             image_name,
             node_main_command,
             detach=True,
             environment=env,
-            name=f"{self.name_prefix}_node_{len(self.__node_containers)}",
+            name=name,
             network=self.network_name,
             remove=True,
-            ports={RPC_PORT: None},
+            ports={RPC_PORT: host_port},
             volumes=[
                 f"{os.path.abspath('./node-config/config-node.toml')}:/root/Nano/config-node.toml",
                 f"{os.path.abspath('./node-config/config-rpc.toml')}:/root/Nano/config-rpc.toml",
@@ -364,24 +427,63 @@ class NanoTest:
         self.__node_containers.append(container)
 
         node = NanoNode(container)
+        self.nodes.append(node)
+
+        node.ensure_started()
+        node.print_info()
+
         return node
 
-    @property
-    def genesis(self):
-        return self.genesis_node, self.genesis_account
+    def print_all_nodes(self):
+        print("START>>> ALL NODES:")
 
-    def ensure_all_confirmed(self):
-        print(">> ensure_all_confirmed:")
         for node in self.nodes:
             node.print_info()
 
+        print("END>>>   ALL NODES")
 
-def create():
-    nano_test = NanoTest()
-    nano_test.setup()
 
-    return nano_test
+default_nanonet: NanoNet = None
+
+
+def generate_random_account() -> Chain:
+    seed = nanolib.generate_seed()
+    account_id = nanolib.generate_account_id(seed, 0)
+    private_key = nanolib.generate_account_private_key(seed, 0)
+    return Chain(account_id, private_key, None)
+
+
+def flush_block_queue(node: NanoNode, block_queue=default_queue, async_process=True):
+    cnt, hashes = node.pubish_queue(block_queue, async_process)
+    return cnt, hashes
+
+
+@retry(delay=1)
+def ensure_all_confirmed(nodes=None):
+    if nodes is None:
+        nodes = default_nanonet.nodes
+
+    target = max([node.block_count.cemented for node in nodes])
+    for node in nodes:
+        node.populate_backlog()
+
+        block_count = node.block_count
+        if block_count.unchecked != 0:
+            raise ValueError("checked not synced")
+        if block_count.checked != block_count.cemented:
+            raise ValueError("not all cemented")
+        if block_count.cemented != target:
+            raise ValueError("not everything propagated")
+
+
+def initialize():
+    nanonet = NanoNet()
+    nanonet.setup()
+
+    default_nanonet = nanonet
+
+    return nanonet
 
 
 if __name__ == "__main__":
-    create()
+    initialize()
