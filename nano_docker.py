@@ -164,9 +164,7 @@ class Chain:
 
             block = Block(block_nlib, self.frontier)
 
-        print(block)
         block_queue.append(block)
-
         if not fork:
             self.frontier = block
         return block
@@ -179,11 +177,8 @@ class NanoWalletAccount:
         self.account_id = account_id
         self.private_key = private_key
 
-    def print_info(self):
-        print("account:", self.account_id)
-        print("balance:", self.balance)
-        print("pending:", self.pending)
-        print()
+    def __str__(self):
+        return f"[{self.account_id} | balance: {self.balance} | pending: {self.pending}]"
 
     @property
     def balance(self):
@@ -246,16 +241,9 @@ class NanoNode:
     def ensure_started(self):
         self.rpc.version()
 
-    def print_info(self):
-        print("name:", self.name)
-        print("port:", self.host_rpc_port)
-        block_count = self.block_count
-        print("blocks checked  :", block_count.checked)
-        print("blocks cemented :", block_count.cemented)
-        print("blocks unchecked:", block_count.unchecked)
-        # print("version:", self.rpc.version())
-        print("peers:", len(self.peers))
-        print()
+    def __str__(self):
+        count = self.block_count
+        return f"[{self.name: <32} | port: {self.host_rpc_port: <5} | peers: {len(self.peers): >4} | checked: {count.checked: >9} | cemented: {count.cemented: >9} | unchecked: {count.unchecked: >9}]"
 
     @property
     def host_rpc_port(self):
@@ -430,17 +418,18 @@ class NanoNet:
         self.nodes.append(node)
 
         node.ensure_started()
-        node.print_info()
+
+        print("Started:", node)
 
         return node
 
     def print_all_nodes(self):
-        print("START>>> ALL NODES:")
+        print("======================================= ALL NODES")
 
         for node in self.nodes:
-            node.print_info()
+            print(node)
 
-        print("END>>>   ALL NODES")
+        print("=======================================")
 
 
 default_nanonet: NanoNet = None
@@ -458,10 +447,14 @@ def flush_block_queue(node: NanoNode, block_queue=default_queue, async_process=T
     return cnt, hashes
 
 
-@retry(delay=1)
+@retry(delay=2)
 def ensure_all_confirmed(nodes=None):
     if nodes is None:
         nodes = default_nanonet.nodes
+
+    print("======================================= ENSURE ALL CONFIRMED")
+    for node in nodes:
+        print(node)
 
     target = max([node.block_count.cemented for node in nodes])
     for node in nodes:
@@ -475,11 +468,13 @@ def ensure_all_confirmed(nodes=None):
         if block_count.cemented != target:
             raise ValueError("not everything propagated")
 
+    print("======================================= DONE")
 
 def initialize():
     nanonet = NanoNet()
     nanonet.setup()
 
+    global default_nanonet
     default_nanonet = nanonet
 
     return nanonet

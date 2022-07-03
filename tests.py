@@ -14,7 +14,7 @@ def distribute_voting_weight_uniform(nanonet, count, reserved):
         for n in range(count)
     ]
 
-    print("genesis balance:", nanonet.genesis.account.balance)
+    print("Genesis:", nanonet.genesis.account)
 
     balance_left = nanonet.genesis.account.balance - reserved
     assert balance_left <= nanonet.genesis.account.balance
@@ -22,19 +22,21 @@ def distribute_voting_weight_uniform(nanonet, count, reserved):
     balance_per_rep = int(balance_left // count)
     assert balance_per_rep * count <= nanonet.genesis.account.balance
 
-    print("balance_per_rep:", balance_per_rep)
+    print("Balance per rep:", balance_per_rep, "x", count)
 
     for rep_wallet, rep_account in reps:
-        nanonet.genesis.account.print_info()
+        print("Seeding:", rep_account, "with:", balance_per_rep)
 
         nanonet.genesis.account.send(rep_account, balance_per_rep)
-        nanonet.ensure_all_confirmed()
+
+        nanotest.ensure_all_confirmed()
 
     return reps
 
 
 def spam_bin_tree(node, amount, source_account, count):
-    source_account.print_info()
+    print("======================================= SPAM BIN TREE")
+    print("Spam source:", source_account)
 
     chain_root = nanotest.generate_random_account()
     chain_root.receive(source_account.send(chain_root, amount))
@@ -57,7 +59,9 @@ def spam_bin_tree(node, amount, source_account, count):
         q.append(b)
 
         if i % 100 == 0:
-            print("spam bin_tree:", i)
+            print("Progress:", i)
+
+    print("======================================= DONE")
 
 
 class TestStringMethods(unittest.TestCase):
