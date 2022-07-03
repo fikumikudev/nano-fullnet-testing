@@ -11,6 +11,7 @@ import nanolib
 from retry import retry
 
 import common
+from common import title_bar
 
 RPC_PORT = 17076
 HOST_RPC_PORT = 17076
@@ -178,7 +179,9 @@ class NanoWalletAccount:
         self.private_key = private_key
 
     def __str__(self):
-        return f"[{self.account_id} | balance: {self.balance} | pending: {self.pending}]"
+        return (
+            f"[{self.account_id} | balance: {self.balance} | pending: {self.pending}]"
+        )
 
     @property
     def balance(self):
@@ -448,11 +451,11 @@ def flush_block_queue(node: NanoNode, block_queue=default_queue, async_process=T
 
 
 @retry(delay=2)
+@title_bar(name="ENSURE ALL CONFIRMED")
 def ensure_all_confirmed(nodes=None):
     if nodes is None:
         nodes = default_nanonet.nodes
 
-    print("======================================= ENSURE ALL CONFIRMED")
     for node in nodes:
         print(node)
 
@@ -468,7 +471,6 @@ def ensure_all_confirmed(nodes=None):
         if block_count.cemented != target:
             raise ValueError("not everything propagated")
 
-    print("======================================= DONE")
 
 def initialize():
     nanonet = NanoNet()

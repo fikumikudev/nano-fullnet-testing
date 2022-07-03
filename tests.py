@@ -6,6 +6,8 @@ from decimal import *
 from itertools import chain
 
 import nano_docker as nanotest
+import common
+from common import title_bar
 
 
 def distribute_voting_weight_uniform(nanonet, count, reserved):
@@ -34,8 +36,8 @@ def distribute_voting_weight_uniform(nanonet, count, reserved):
     return reps
 
 
+@title_bar(name="SPAM BIN TREE")
 def spam_bin_tree(node, amount, source_account, count):
-    print("======================================= SPAM BIN TREE")
     print("Spam source:", source_account)
 
     chain_root = nanotest.generate_random_account()
@@ -60,8 +62,6 @@ def spam_bin_tree(node, amount, source_account, count):
 
         if i % 100 == 0:
             print("Progress:", i)
-
-    print("======================================= DONE")
 
 
 class TestStringMethods(unittest.TestCase):
