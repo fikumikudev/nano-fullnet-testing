@@ -5,8 +5,11 @@ from collections import deque
 from decimal import *
 from itertools import chain
 
-import nano_docker as nanotest
+from joblib import Parallel, delayed
+
 import common
+import nano_docker as nanotest
+from nano_docker import BlockQueue, NanoNode, NanoNodeRPC
 from common import title_bar
 
 
@@ -37,14 +40,8 @@ def distribute_voting_weight_uniform(nanonet, count, reserved):
     return reps
 
 
-@title_bar(name="SPAM BIN TREE")
-def spam_bin_tree(node, amount, source_account, count):
-    print("Spam source:", source_account)
-
-    chain_root = nanotest.generate_random_account()
-    chain_root.receive(source_account.send(chain_root, amount))
-    nanotest.flush_block_queue(node)
-
+def __spam_bin_tree_impl(rpc_address, chain_root, count):
+    node = NanoNodeRPC(rpc_address)
     q = deque([chain_root])
 
     for i in range(count):
@@ -56,13 +53,33 @@ def spam_bin_tree(node, amount, source_account, count):
         a.receive(r.send(a, half_balance))
         b.receive(r.send(b, half_balance))
 
-        nanotest.flush_block_queue(node)
-
         q.append(a)
         q.append(b)
 
         if i % 100 == 0:
             print("Progress:", i)
+
+    nanotest.flush_block_queue(node)
+
+
+@title_bar(name="SPAM BIN TREE")
+def spam_bin_tree(node: NanoNode, spam_raw, source_account, spam_count):
+    print("Spam source:", source_account)
+
+    spam_roots = [nanotest.generate_random_account() for _ in range(spam_count)]
+    for spam_root in spam_roots:
+        spam_root.receive(source_account.send(spam_root, spam_raw))
+
+    nanotest.flush_block_queue(node)
+
+    Parallel(n_jobs=spam_count)(
+        delayed(__spam_bin_tree_impl)(
+            rpc_address=node.rpc_address,
+            chain_root=spam_root,
+            count=500,
+        )
+        for spam_root in spam_roots
+    )
 
 
 class TestStringMethods(unittest.TestCase):
@@ -71,16 +88,13 @@ class TestStringMethods(unittest.TestCase):
 
         node = nanonet.create_node()
 
-        reserved_raw = 2**20
+        spam_count = 16
+        spam_raw = 2**20
+        reserved_raw = spam_raw * spam_count
         reps = distribute_voting_weight_uniform(nanonet, 5, reserved_raw)
 
-        genesis_chain = nanonet.genesis.account.to_chain()
-
         spam_bin_tree(
-            nanonet.genesis.node,
-            amount=reserved_raw,
-            source_account=nanonet.genesis.account,
-            count=500,
+            nanonet.genesis.node, spam_raw, nanonet.genesis.account, spam_count
         )
 
         nanonet.ensure_all_confirmed()

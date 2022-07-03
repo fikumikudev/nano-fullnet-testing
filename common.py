@@ -13,8 +13,13 @@ def strike(text):
 
 
 @decorator
-def title_bar(func, name=None, *args, **kw):
-    print(f"================ {name} ================")
+def title_bar(func, name=None, no_header=False, no_footer=False, *args, **kw):
+    if not no_header:
+        print(f"================ {name} ================")
+
     result = func(*args, **kw)
-    print(f"================ {strike(name)}")
+
+    if not no_footer:
+        print(f"================ {strike(name)}")
+
     return result

@@ -241,10 +241,35 @@ BlockCount = namedtuple("BlockCount", ["checked", "unchecked", "cemented"])
 AecInfo = namedtuple("AecInfo", ["confirmed", "unconfirmed", "confirmations"])
 
 
+class NanoNodeRPC:
+    def __init__(self, rpc_address):
+        self.rpc = nano.rpc.Client(rpc_address)
+
+    def publish_block(self, block: Block, async_process=True):
+        if async_process:
+            payload = {"block": block.json(), "async": async_process}
+            res = self.rpc.call("process", payload)
+            return res
+        else:
+            return self.rpc.process(block.json())
+
+    def pubish_queue(self, block_queue: BlockQueue, async_process=True):
+        unpub = default_queue.pop_all()
+        cnt = len(unpub)
+        hashes = [
+            self.publish_block(block, async_process=async_process) for block in unpub
+        ]
+        return cnt, hashes
+
+
 class NanoNode:
     def __init__(self, container):
         self.container = container
-        self.rpc = nano.rpc.Client(f"http://localhost:{self.host_rpc_port}")
+        self.rpc = nano.rpc.Client(self.rpc_address)
+
+    @property
+    def rpc_address(self):
+        return f"http://localhost:{self.host_rpc_port}"
 
     @retry(tries=15, delay=0.3)
     def ensure_started(self):
@@ -465,32 +490,35 @@ class NanoNet:
 
         print("Started exporter:", container.name)
 
-    @title_bar(name="ALL NODES")
+    @title_bar(name="", no_header=True)
     def print_all_nodes(self):
         for node in self.nodes:
             print(node)
 
-    @retry(delay=2)
     @title_bar(name="ENSURE ALL CONFIRMED")
     def ensure_all_confirmed(self, populate_backlog=False):
         nodes = self.nodes
 
-        self.print_all_nodes()
+        @retry(delay=2)
+        def ensure_all_confirmed_loop():
+            self.print_all_nodes()
 
-        target = max([node.block_count.cemented for node in nodes])
-        for node in nodes:
-            if populate_backlog:
-                node.populate_backlog()
+            target = max([node.block_count.cemented for node in nodes])
+            for node in nodes:
+                if populate_backlog:
+                    node.populate_backlog()
 
-            block_count = node.block_count
-            if block_count.unchecked != 0:
-                raise ValueError("checked not synced")
-            if block_count.checked != block_count.cemented:
-                raise ValueError("not all cemented")
-            if block_count.cemented != target:
-                raise ValueError("not everything propagated")
-            if node.aec.unconfirmed != 0:
-                raise ValueError("aec unconfirmed not 0")
+                block_count = node.block_count
+                if block_count.unchecked != 0:
+                    raise ValueError("checked not synced")
+                if block_count.checked != block_count.cemented:
+                    raise ValueError("not all cemented")
+                if block_count.cemented != target:
+                    raise ValueError("not everything propagated")
+                if node.aec.unconfirmed != 0:
+                    raise ValueError("aec unconfirmed not 0")
+
+        ensure_all_confirmed_loop()
 
         self.print_all_nodes()
 
@@ -505,7 +533,9 @@ def generate_random_account() -> Chain:
     return Chain(account_id, private_key, None)
 
 
-def flush_block_queue(node: NanoNode, block_queue=default_queue, async_process=True):
+def flush_block_queue(
+    node: Union[NanoNode, NanoNodeRPC], block_queue=default_queue, async_process=True
+):
     cnt, hashes = node.pubish_queue(block_queue, async_process)
     return cnt, hashes
 
