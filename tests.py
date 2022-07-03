@@ -10,6 +10,7 @@ import common
 from common import title_bar
 
 
+@title_bar(name="INITIALIZE REPRESENTATIVES")
 def distribute_voting_weight_uniform(nanonet, count, reserved):
     reps = [
         nanonet.create_node(name=f"rep_{n}").create_wallet(use_as_repr=True)
@@ -31,7 +32,7 @@ def distribute_voting_weight_uniform(nanonet, count, reserved):
 
         nanonet.genesis.account.send(rep_account, balance_per_rep)
 
-        nanotest.ensure_all_confirmed()
+        nanonet.ensure_all_confirmed(populate_backlog=True)
 
     return reps
 
@@ -74,6 +75,7 @@ class TestStringMethods(unittest.TestCase):
         reps = distribute_voting_weight_uniform(nanonet, 5, reserved_raw)
 
         genesis_chain = nanonet.genesis.account.to_chain()
+
         spam_bin_tree(
             nanonet.genesis.node,
             amount=reserved_raw,
@@ -81,7 +83,7 @@ class TestStringMethods(unittest.TestCase):
             count=500,
         )
 
-        nanotest.ensure_all_confirmed()
+        nanonet.ensure_all_confirmed()
 
         pass
 

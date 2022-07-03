@@ -1,6 +1,7 @@
 import os
 from collections import namedtuple
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import *
 from typing import NamedTuple, Tuple, Union
 
@@ -13,11 +14,14 @@ from retry import retry
 import common
 from common import title_bar
 
+NAME_PREFIX = "nano-baseline"
 RPC_PORT = 17076
 HOST_RPC_PORT = 17076
 BURN_ACCOUNT = "nano_1111111111111111111111111111111111111111111111111111hifc8npp"
 DEFAULT_REPR = BURN_ACCOUNT
 DIFFICULTY = "0000000000000000"
+NODE_IMAGE_NAME = "nano-node"
+PROM_EXPORTER_IMAGE_NAME = "nano-prom-exporter"
 
 
 def account_id_from_account(account):
@@ -234,6 +238,8 @@ class NanoWallet:
 
 BlockCount = namedtuple("BlockCount", ["checked", "unchecked", "cemented"])
 
+AecInfo = namedtuple("AecInfo", ["confirmed", "unconfirmed", "confirmations"])
+
 
 class NanoNode:
     def __init__(self, container):
@@ -246,15 +252,19 @@ class NanoNode:
 
     def __str__(self):
         count = self.block_count
-        return f"[{self.name: <32} | port: {self.host_rpc_port: <5} | peers: {len(self.peers): >4} | checked: {count.checked: >9} | cemented: {count.cemented: >9} | unchecked: {count.unchecked: >9}]"
+        return f"[{self.full_name: <32} | port: {self.host_rpc_port: <5} | peers: {len(self.peers): >4} | checked: {count.checked: >9} | cemented: {count.cemented: >9} | unchecked: {count.unchecked: >9} | aec: {self.aec.unconfirmed: >5}]"
 
     @property
     def host_rpc_port(self):
         return int(self.container.ports[f"{RPC_PORT}/tcp"][0]["HostPort"])
 
     @property
-    def name(self):
+    def full_name(self) -> str:
         return self.container.name
+
+    @property
+    def name(self) -> str:
+        return self.full_name.replace(f"{NAME_PREFIX}_", "")
 
     @property
     def block_count(self) -> BlockCount:
@@ -312,6 +322,18 @@ class NanoNode:
         res = self.rpc.call("populate_backlog")
         return True
 
+    @property
+    def stat_objects(self):
+        res = self.rpc.call("stats", {"type": "objects"})
+
+    @property
+    def aec(self):
+        res = self.rpc.call("confirmation_active")
+        confirmed = int(res["confirmed"])
+        unconfirmed = int(res["unconfirmed"])
+        confirmations = res["confirmations"]
+        return AecInfo(unconfirmed, confirmed, confirmations)
+
 
 class NodeWalletAccountTuple(NamedTuple):
     node: NanoNode
@@ -320,14 +342,14 @@ class NodeWalletAccountTuple(NamedTuple):
 
 
 class NanoNet:
-    name_prefix = "nano-baseline"
-
     def __init__(self):
+        self.runid = datetime.now()
         self.nodes: list[NanoNode] = []
         self.__node_containers = []
 
+    @title_bar(name="INITIALIZE NANO TEST NETWORK")
     def setup(self):
-        self.network_name = f"{self.name_prefix}_network"
+        print("Run ID:", self.runid)
 
         self.client = docker.from_env()
         self.node_env = dotenv.dotenv_values("node.env")
@@ -356,6 +378,8 @@ class NanoNet:
         return self.__genesis
 
     def __setup_network(self):
+        self.network_name = f"{NAME_PREFIX}_network"
+
         if self.client.networks.list(names=[self.network_name]):
             self.network = self.client.networks.get(self.network_name)
         else:
@@ -363,13 +387,15 @@ class NanoNet:
                 self.network_name, check_duplicate=True
             )
 
+    @title_bar(name="CLEANUP DOCKER")
     def __cleanup_docker(self):
         for cont in self.client.containers.list():
-            if cont.name.startswith(self.name_prefix):
+            if cont.name.startswith(NAME_PREFIX):
+                print("Removing:", cont.name)
                 cont.remove(force=True)
 
     def create_node(
-        self, image_name="nano-node", do_not_peer=False, host_port=None, name=None
+        self, image_name=NODE_IMAGE_NAME, do_not_peer=False, host_port=None, name=None
     ) -> NanoNode:
         additional_cli = os.getenv("NANO_CLI", "")
         node_cli_options = "--network=test --data_path /root/Nano/"
@@ -390,27 +416,24 @@ class NanoNet:
             }
 
         if not name:
-            name = f"{self.name_prefix}_node_{len(self.__node_containers)}"
+            name = f"{NAME_PREFIX}_node_{len(self.__node_containers)}"
         else:
-            name = f"{self.name_prefix}_node_{name}"
+            name = f"{NAME_PREFIX}_node_{name}"
 
         container = self.client.containers.run(
             image_name,
             node_main_command,
             detach=True,
+            remove=True,
             environment=env,
             name=name,
             network=self.network_name,
-            remove=True,
             ports={RPC_PORT: host_port},
             volumes=[
                 f"{os.path.abspath('./node-config/config-node.toml')}:/root/Nano/config-node.toml",
                 f"{os.path.abspath('./node-config/config-rpc.toml')}:/root/Nano/config-rpc.toml",
             ],
         )
-
-        # for line in container.logs(stream=True):
-        #     print(line.strip())
 
         container.reload()  # required to get auto-assigned ports
         # print(container.ports)
@@ -419,20 +442,57 @@ class NanoNet:
 
         node = NanoNode(container)
         self.nodes.append(node)
-
         node.ensure_started()
-
         print("Started:", node)
+
+        self.__create_prom_exporter(node)
 
         return node
 
-    def print_all_nodes(self):
-        print("======================================= ALL NODES")
+    def __create_prom_exporter(self, node: NanoNode):
+        command = f"--rpchost 127.0.0.1 --rpc_port {node.host_rpc_port} --hostname {node.name} --interval 1 --runid '{self.runid}'"
 
+        container_name = f"{NAME_PREFIX}_prom_export_{node.name}"
+
+        container = self.client.containers.run(
+            PROM_EXPORTER_IMAGE_NAME,
+            command,
+            detach=True,
+            remove=True,
+            name=container_name,
+            network_mode="host",
+        )
+
+        print("Started exporter:", container.name)
+
+    @title_bar(name="ALL NODES")
+    def print_all_nodes(self):
         for node in self.nodes:
             print(node)
 
-        print("=======================================")
+    @retry(delay=2)
+    @title_bar(name="ENSURE ALL CONFIRMED")
+    def ensure_all_confirmed(self, populate_backlog=False):
+        nodes = self.nodes
+
+        self.print_all_nodes()
+
+        target = max([node.block_count.cemented for node in nodes])
+        for node in nodes:
+            if populate_backlog:
+                node.populate_backlog()
+
+            block_count = node.block_count
+            if block_count.unchecked != 0:
+                raise ValueError("checked not synced")
+            if block_count.checked != block_count.cemented:
+                raise ValueError("not all cemented")
+            if block_count.cemented != target:
+                raise ValueError("not everything propagated")
+            if node.aec.unconfirmed != 0:
+                raise ValueError("aec unconfirmed not 0")
+
+        self.print_all_nodes()
 
 
 default_nanonet: NanoNet = None
@@ -448,28 +508,6 @@ def generate_random_account() -> Chain:
 def flush_block_queue(node: NanoNode, block_queue=default_queue, async_process=True):
     cnt, hashes = node.pubish_queue(block_queue, async_process)
     return cnt, hashes
-
-
-@retry(delay=2)
-@title_bar(name="ENSURE ALL CONFIRMED")
-def ensure_all_confirmed(nodes=None):
-    if nodes is None:
-        nodes = default_nanonet.nodes
-
-    for node in nodes:
-        print(node)
-
-    target = max([node.block_count.cemented for node in nodes])
-    for node in nodes:
-        node.populate_backlog()
-
-        block_count = node.block_count
-        if block_count.unchecked != 0:
-            raise ValueError("checked not synced")
-        if block_count.checked != block_count.cemented:
-            raise ValueError("not all cemented")
-        if block_count.cemented != target:
-            raise ValueError("not everything propagated")
 
 
 def initialize():
