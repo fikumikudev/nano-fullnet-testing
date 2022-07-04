@@ -321,7 +321,7 @@ insufficient_work = false
 
 # Log ledger related messages.
 # type:bool
-#ledger = true
+ledger = true
 
 # Log when a duplicate block is attempted inserted into the ledger.
 # type:bool

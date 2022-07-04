@@ -10,7 +10,10 @@
             "request": "launch",
             "program": "tests.py",
             "console": "integratedTerminal",
-            "justMyCode": true
+            // "justMyCode": false,
+            "env": {
+                // "NANO_CLI": "--disable_legacy_bootstrap"
+            }
         }
     ]
 }
