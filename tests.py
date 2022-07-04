@@ -63,20 +63,22 @@ def __spam_bin_tree_impl(rpc_address, chain_root, count):
 
 
 @title_bar(name="SPAM BIN TREE")
-def spam_bin_tree(node: NanoNode, spam_raw, source_account, spam_count):
+def spam_bin_tree(
+    node: NanoNode, spam_raw, source_account, spam_concurrent, spam_count
+):
     print("Spam source:", source_account)
 
-    spam_roots = [nanotest.generate_random_account() for _ in range(spam_count)]
+    spam_roots = [nanotest.generate_random_account() for _ in range(spam_concurrent)]
     for spam_root in spam_roots:
         spam_root.receive(source_account.send(spam_root, spam_raw))
 
     nanotest.flush_block_queue(node)
 
-    Parallel(n_jobs=spam_count)(
+    Parallel(n_jobs=spam_concurrent)(
         delayed(__spam_bin_tree_impl)(
             rpc_address=node.rpc_address,
             chain_root=spam_root,
-            count=500,
+            count=spam_count,
         )
         for spam_root in spam_roots
     )
@@ -88,13 +90,18 @@ class TestStringMethods(unittest.TestCase):
 
         node = nanonet.create_node()
 
-        spam_count = 16
+        spam_count = 1000
+        spam_concurrent = 16
         spam_raw = 2**20
-        reserved_raw = spam_raw * spam_count
+        reserved_raw = spam_raw * spam_concurrent
         reps = distribute_voting_weight_uniform(nanonet, 5, reserved_raw)
 
         spam_bin_tree(
-            nanonet.genesis.node, spam_raw, nanonet.genesis.account, spam_count
+            node,
+            spam_raw,
+            nanonet.genesis.account,
+            spam_concurrent,
+            spam_count,
         )
 
         nanonet.ensure_all_confirmed()

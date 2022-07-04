@@ -22,6 +22,7 @@ DEFAULT_REPR = BURN_ACCOUNT
 DIFFICULTY = "0000000000000000"
 NODE_IMAGE_NAME = "nano-node"
 PROM_EXPORTER_IMAGE_NAME = "nano-prom-exporter"
+CPUS_PER_NODE = 4
 
 
 def account_id_from_account(account):
@@ -245,6 +246,7 @@ class NanoNodeRPC:
     def __init__(self, rpc_address):
         self.rpc = nano.rpc.Client(rpc_address)
 
+    @retry(tries=15, delay=3)
     def publish_block(self, block: Block, async_process=True):
         if async_process:
             payload = {"block": block.json(), "async": async_process}
@@ -311,6 +313,7 @@ class NanoNode:
             wallet.set_represenetative(account)
         return wallet, account
 
+    @retry(tries=3, delay=0.5)
     def publish_block(self, block: Block, async_process=True):
         if async_process:
             payload = {"block": block.json(), "async": async_process}
@@ -458,6 +461,7 @@ class NanoNet:
                 f"{os.path.abspath('./node-config/config-node.toml')}:/root/Nano/config-node.toml",
                 f"{os.path.abspath('./node-config/config-rpc.toml')}:/root/Nano/config-rpc.toml",
             ],
+            cpuset_cpus=str(CPUS_PER_NODE),
         )
 
         container.reload()  # required to get auto-assigned ports
