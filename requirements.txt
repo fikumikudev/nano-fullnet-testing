@@ -1,0 +1,7 @@
+wheel
+docker
+python-dotenv
+nanolib
+nano-python
+retry
+decorator
